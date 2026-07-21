@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Finger Rainbow — hand tracking FX</title>
+<style>
+  :root{
+    --bg: #08080b;
+    --panel: rgba(14,14,18,0.72);
+    --line: rgba(255,255,255,0.14);
+    --text: #e9e9ee;
+    --muted: #7a7a86;
+    --ok: #7CFFB2;
+    --warn: #FFD27C;
+  }
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; padding:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:'IBM Plex Mono','JetBrains Mono',ui-monospace,monospace;
+    overflow:hidden;
+  }
+  .stage{
+    position:relative; width:100vw; height:100vh;
+    display:flex; align-items:center; justify-content:center;
+    background:
+      radial-gradient(circle at 50% 20%, #14141c 0%, #08080b 60%);
+  }
+  video{ display:none; }
+  canvas#view{
+    max-width:100%; max-height:100%;
+    transform: scaleX(-1); /* mirror like a real mirror */
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px var(--line), 0 30px 80px -20px rgba(0,0,0,0.8);
+  }
+
+  /* corner viewfinder brackets */
+  .brackets span{
+    position:absolute; width:22px; height:22px; border:2px solid rgba(255,255,255,0.35);
+  }
+  .b-tl{ top:14px; left:14px; border-right:none; border-bottom:none; }
+  .b-tr{ top:14px; right:14px; border-left:none; border-bottom:none; }
+  .b-bl{ bottom:14px; left:14px; border-right:none; border-top:none; }
+  .b-br{ bottom:14px; right:14px; border-left:none; border-top:none; }
+
+  .hud-top{
+    position:absolute; top:22px; left:50%; transform:translateX(-50%);
+    text-align:center; pointer-events:none;
+  }
+  .hud-title{
+    font-size:11px; letter-spacing:0.28em; text-transform:uppercase;
+    color:var(--muted); font-weight:600;
+  }
+  .hud-title b{ color:var(--text); }
+
+  .hud-stats{
+    position:absolute; top:20px; left:36px;
+    font-size:11px; line-height:1.7; color:var(--muted);
+    background:var(--panel); border:1px solid var(--line);
+    padding:10px 14px; border-radius:6px; backdrop-filter: blur(6px);
+    min-width:150px;
+  }
+  .hud-stats .row{ display:flex; justify-content:space-between; gap:16px; }
+  .hud-stats .row span:last-child{ color:var(--text); }
+  .dot{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; }
+  .dot.on{ background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  .dot.off{ background:#555; }
+
+  .hint{
+    position:absolute; bottom:34px; left:50%; transform:translateX(-50%);
+    font-size:12px; color:var(--muted); letter-spacing:0.03em;
+    background:var(--panel); border:1px solid var(--line);
+    padding:9px 16px; border-radius:20px; backdrop-filter: blur(6px);
+    white-space:nowrap;
+  }
+
+  .loading{
+    position:absolute; inset:0; display:flex; flex-direction:column; gap:14px;
+    align-items:center; justify-content:center; background:var(--bg); z-index:10;
+    transition:opacity .5s ease;
+  }
+  .loading.hidden{ opacity:0; pointer-events:none; }
+  .spinner{
+    width:34px; height:34px; border-radius:50%;
+    border:2px solid var(--line); border-top-color:var(--text);
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  .loading-text{ font-size:12px; color:var(--muted); letter-spacing:0.08em; }
+  .err{
+    position:absolute; inset:0; display:none; align-items:center; justify-content:center;
+    padding:40px; text-align:center; z-index:11; background:var(--bg);
+  }
+  .err.show{ display:flex; }
+  .err p{ max-width:420px; color:var(--muted); font-size:13px; line-height:1.6; }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text">ЗАПУСК КАМЕРЫ И МОДЕЛИ ТРЕКИНГА…</div>
+  </div>
+
+  <div class="err" id="err">
+    <p>Не удалось получить доступ к камере. Разрешите доступ к веб-камере в браузере и обновите страницу.</p>
+  </div>
+
+  <video id="video" playsinline></video>
+  <canvas id="view"></canvas>
+
+  <div class="brackets">
+    <span class="b-tl"></span><span class="b-tr"></span>
+    <span class="b-bl"></span><span class="b-br"></span>
+  </div>
+
+  <div class="hud-top">
+    <div class="hud-title">HAND TRACKER · EFFECT 01 <b>RAINBOW LINK</b></div>
+  </div>
+
+  <div class="hud-stats">
+    <div class="row"><span><span class="dot off" id="dotL"></span>Left</span><span id="handL">—</span></div>
+    <div class="row"><span><span class="dot off" id="dotR"></span>Right</span><span id="handR">—</span></div>
+    <div class="row"><span>FPS</span><span id="fps">—</span></div>
+  </div>
+
+  <div class="hint">двумя руками сложи рамку из больших и указательных пальцев — внутри появится радужный фильтр</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+<script>
+const videoEl = document.getElementById('video');
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+const loadingEl = document.getElementById('loading');
+const errEl = document.getElementById('err');
+const fpsEl = document.getElementById('fps');
+const handLEl = document.getElementById('handL');
+const handREl = document.getElementById('handR');
+const dotL = document.getElementById('dotL');
+const dotR = document.getElementById('dotR');
+
+let lastFrameTime = performance.now();
+let fpsSmooth = 0;
+let firstResult = false;
+
+// ---- landmark indices we need ----
+const THUMB_TIP = 4;
+const INDEX_TIP = 8;
+
+// ---------------------------------------------------------------
+// Effect registry — designed so more gesture effects can be added
+// later without touching the tracking/render loop.
+// Each effect receives: ctx, {p1,p2} fingertip pixel points, time(s), pinchStrength(0..1)
+// ---------------------------------------------------------------
+const EFFECTS = {
+  // Fallback for a single hand: a rainbow ribbon between its own thumb & index.
+  rainbowLink(ctx, p1, p2, t, strength, seed){
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const nx = -dy / dist, ny = dx / dist;
+
+    const strands = 5;
+    const segments = 26;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let s = 0; s < strands; s++){
+      const hueBase = (s / strands) * 300 + t * 55 + seed * 70;
+      ctx.beginPath();
+      for (let i = 0; i <= segments; i++){
+        const tt = i / segments;
+        const baseX = p1.x + dx * tt;
+        const baseY = p1.y + dy * tt;
+        const amp = (4 + dist * 0.05) * (0.4 + strength * 0.6);
+        const wave = Math.sin(tt * Math.PI * 2.4 + t * 3.2 + s * 1.1) * amp;
+        const spread = (s - strands / 2) * (3 + strength * 3);
+        const px = baseX + nx * (wave + spread);
+        const py = baseY + ny * (wave + spread);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      const hue = (hueBase) % 360;
+      ctx.strokeStyle = `hsl(${hue}, 100%, ${58 + strength * 10}%)`;
+      ctx.lineWidth = 2 + strength * 2.5;
+      ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
+      ctx.shadowBlur = 10 + strength * 18;
+      ctx.stroke();
+    }
+
+    [p1, p2].forEach(p => {
+      const r = 10 + strength * 14;
+      const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+      grad.addColorStop(0, `rgba(255,255,255,${0.85})`);
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    ctx.restore();
+  },
+
+  // Main effect: both hands frame a quadrilateral (thumb+index of each hand
+  // = 4 points). The enclosed area is clipped and re-colorized with a moving
+  // rainbow gradient using the 'color' blend mode, so the real video shows
+  // through, tinted like a rainbow lens/filter. Border + node glow on top.
+  polygonFilter(ctx, points, t){
+    if (points.length < 3) return;
+
+    const cx = points.reduce((s, p) => s + p.x, 0) / points.length;
+    const cy = points.reduce((s, p) => s + p.y, 0) / points.length;
+    const sorted = points.slice().sort(
+      (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
+    );
+
+    const xs = sorted.map(p => p.x), ys = sorted.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const diag = Math.hypot(maxX - minX, maxY - minY) || 1;
+
+    // --- clipped rainbow color-fill over the real video ---
+    ctx.save();
+    ctx.beginPath();
+    sorted.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    ctx.clip();
+
+    const angle = t * 0.5;
+    const gx1 = cx - Math.cos(angle) * diag, gy1 = cy - Math.sin(angle) * diag;
+    const gx2 = cx + Math.cos(angle) * diag, gy2 = cy + Math.sin(angle) * diag;
+    const grad = ctx.createLinearGradient(gx1, gy1, gx2, gy2);
+    const stops = 8;
+    for (let i = 0; i <= stops; i++){
+      const hue = ((i / stops) * 360 + t * 70) % 360;
+      grad.addColorStop(i / stops, `hsl(${hue}, 100%, 55%)`);
+    }
+
+    ctx.globalCompositeOperation = 'color'; // recolors underlying pixels, keeps luminosity
+    ctx.fillStyle = grad;
+    ctx.fillRect(minX - 20, minY - 20, (maxX - minX) + 40, (maxY - minY) + 40);
+
+    // faint extra saturation boost so the tint reads clearly on skin/background
+    ctx.globalCompositeOperation = 'saturation';
+    ctx.fillStyle = 'hsl(0, 100%, 50%)';
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(minX - 20, minY - 20, (maxX - minX) + 40, (maxY - minY) + 40);
+    ctx.restore();
+
+    // --- glowing border + fingertip nodes (unclipped) ---
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.beginPath();
+    sorted.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    const borderHue = (t * 90) % 360;
+    ctx.strokeStyle = `hsl(${borderHue}, 100%, 65%)`;
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = ctx.strokeStyle;
+    ctx.shadowBlur = 16;
+    ctx.stroke();
+
+    sorted.forEach((p, i) => {
+      const hue = (borderHue + i * 45) % 360;
+      const r = 13;
+      const g2 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+      g2.addColorStop(0, `hsla(${hue}, 100%, 70%, 0.9)`);
+      g2.addColorStop(1, `hsla(${hue}, 100%, 70%, 0)`);
+      ctx.fillStyle = g2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+};
+
+// subtle skeleton style — quiet HUD feel, not decorative
+const SKELETON_COLOR = 'rgba(255,255,255,0.28)';
+const SKELETON_DOT = 'rgba(255,255,255,0.35)';
+
+function pinchStrength(p1, p2, width){
+  const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  const norm = dist / width; // normalize by frame width
+  const near = 0.02, far = 0.16;
+  let s = 1 - (norm - near) / (far - near);
+  return Math.max(0, Math.min(1, s));
+}
+
+function toPx(lm, w, h){
+  return { x: lm.x * w, y: lm.y * h };
+}
+
+function onResults(results){
+  const now = performance.now();
+  const dt = now - lastFrameTime;
+  lastFrameTime = now;
+  const fps = 1000 / dt;
+  fpsSmooth = fpsSmooth ? fpsSmooth * 0.9 + fps * 0.1 : fps;
+  fpsEl.textContent = Math.round(fpsSmooth);
+
+  if (!firstResult){
+    firstResult = true;
+    loadingEl.classList.add('hidden');
+  }
+
+  const w = canvas.width, h = canvas.height;
+  ctx.save();
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(results.image, 0, 0, w, h);
+
+  let leftSeen = false, rightSeen = false;
+  const t = now / 1000;
+  const framePoints = []; // thumb+index tips across all detected hands
+
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length){
+    results.multiHandLandmarks.forEach((landmarks, idx) => {
+      const handInfo = results.multiHandedness[idx];
+      // MediaPipe reports handedness from the camera's (unmirrored) perspective;
+      // since our canvas is CSS-mirrored, "Left" label in data = viewer's left on screen.
+      const label = handInfo.label; // 'Left' | 'Right'
+      if (label === 'Left') leftSeen = true; else rightSeen = true;
+
+      // faint skeleton for context
+      if (window.drawConnectors && window.HAND_CONNECTIONS){
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: SKELETON_COLOR, lineWidth: 1 });
+        drawLandmarks(ctx, landmarks, { color: SKELETON_DOT, radius: 1.6, lineWidth: 0 });
+      }
+
+      const p1 = toPx(landmarks[THUMB_TIP], w, h);
+      const p2 = toPx(landmarks[INDEX_TIP], w, h);
+      framePoints.push(p1, p2);
+    });
+  }
+
+  if (framePoints.length >= 4){
+    // two hands: build the rainbow-filtered quadrilateral from all 4 tips
+    EFFECTS.polygonFilter(ctx, framePoints, t);
+  } else if (framePoints.length === 2){
+    // one hand: fall back to a rainbow link between its own thumb & index
+    const [p1, p2] = framePoints;
+    const strength = pinchStrength(p1, p2, w);
+    EFFECTS.rainbowLink(ctx, p1, p2, t, strength, 0);
+  }
+
+  dotL.className = 'dot ' + (leftSeen ? 'on' : 'off');
+  dotR.className = 'dot ' + (rightSeen ? 'on' : 'off');
+  handLEl.textContent = leftSeen ? 'tracked' : '—';
+  handREl.textContent = rightSeen ? 'tracked' : '—';
+
+  ctx.restore();
+}
+
+const hands = new Hands({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+hands.setOptions({
+  maxNumHands: 2,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.6
+});
+hands.onResults(onResults);
+
+async function start(){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1280, height: 720, facingMode: 'user' },
+      audio: false
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+
+    canvas.width = videoEl.videoWidth || 1280;
+    canvas.height = videoEl.videoHeight || 720;
+
+    const camera = new Camera(videoEl, {
+      onFrame: async () => { await hands.send({ image: videoEl }); },
+      width: canvas.width,
+      height: canvas.height
+    });
+    camera.start();
+  }catch(e){
+    console.error(e);
+    loadingEl.classList.add('hidden');
+    errEl.classList.add('show');
+  }
+}
+
+start();
+</script>
+</body>
+</html>
