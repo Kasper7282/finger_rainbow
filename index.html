@@ -124,7 +124,7 @@
     <div class="row"><span>FPS</span><span id="fps">—</span></div>
   </div>
 
-  <div class="hint">двумя руками сложи рамку из больших и указательных пальцев — внутри появится радужный фильтр</div>
+  <div class="hint">сложи рамку из пальцев; переверни руки, чтобы скрутить рамку в 'X'</div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
@@ -209,24 +209,22 @@ const EFFECTS = {
   // = 4 points). The enclosed area is clipped and re-colorized with a moving
   // rainbow gradient using the 'color' blend mode, so the real video shows
   // through, tinted like a rainbow lens/filter. Border + node glow on top.
-  polygonFilter(ctx, points, t){
-    if (points.length < 3) return;
-
-    const cx = points.reduce((s, p) => s + p.x, 0) / points.length;
-    const cy = points.reduce((s, p) => s + p.y, 0) / points.length;
-    const sorted = points.slice().sort(
-      (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
-    );
-
-    const xs = sorted.map(p => p.x), ys = sorted.map(p => p.y);
+  polygonFilter(ctx, leftThumb, leftIndex, rightThumb, rightIndex, t){
+    const xs = [leftThumb.x, leftIndex.x, rightIndex.x, rightThumb.x];
+    const ys = [leftThumb.y, leftIndex.y, rightIndex.y, rightThumb.y];
     const minX = Math.min(...xs), maxX = Math.max(...xs);
     const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const cx = (leftThumb.x + leftIndex.x + rightIndex.x + rightThumb.x) / 4;
+    const cy = (leftThumb.y + leftIndex.y + rightIndex.y + rightThumb.y) / 4;
     const diag = Math.hypot(maxX - minX, maxY - minY) || 1;
 
     // --- clipped rainbow color-fill over the real video ---
     ctx.save();
     ctx.beginPath();
-    sorted.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.moveTo(leftThumb.x, leftThumb.y);
+    ctx.lineTo(leftIndex.x, leftIndex.y);
+    ctx.lineTo(rightIndex.x, rightIndex.y);
+    ctx.lineTo(rightThumb.x, rightThumb.y);
     ctx.closePath();
     ctx.clip();
 
@@ -255,7 +253,10 @@ const EFFECTS = {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.beginPath();
-    sorted.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.moveTo(leftThumb.x, leftThumb.y);
+    ctx.lineTo(leftIndex.x, leftIndex.y);
+    ctx.lineTo(rightIndex.x, rightIndex.y);
+    ctx.lineTo(rightThumb.x, rightThumb.y);
     ctx.closePath();
     const borderHue = (t * 90) % 360;
     ctx.strokeStyle = `hsl(${borderHue}, 100%, 65%)`;
@@ -264,7 +265,8 @@ const EFFECTS = {
     ctx.shadowBlur = 16;
     ctx.stroke();
 
-    sorted.forEach((p, i) => {
+    const nodes = [leftThumb, leftIndex, rightIndex, rightThumb];
+    nodes.forEach((p, i) => {
       const hue = (borderHue + i * 45) % 360;
       const r = 13;
       const g2 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
@@ -315,7 +317,9 @@ function onResults(results){
 
   let leftSeen = false, rightSeen = false;
   const t = now / 1000;
-  const framePoints = []; // thumb+index tips across all detected hands
+
+  let leftThumb = null, leftIndex = null;
+  let rightThumb = null, rightIndex = null;
 
   if (results.multiHandLandmarks && results.multiHandLandmarks.length){
     results.multiHandLandmarks.forEach((landmarks, idx) => {
@@ -330,19 +334,40 @@ function onResults(results){
         drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: SKELETON_COLOR, lineWidth: 1 });
         drawLandmarks(ctx, landmarks, { color: SKELETON_DOT, radius: 1.6, lineWidth: 0 });
       }
-
-      const p1 = toPx(landmarks[THUMB_TIP], w, h);
-      const p2 = toPx(landmarks[INDEX_TIP], w, h);
-      framePoints.push(p1, p2);
     });
+
+    if (results.multiHandLandmarks.length >= 2) {
+      const hand0 = results.multiHandLandmarks[0];
+      const hand1 = results.multiHandLandmarks[1];
+      const label0 = results.multiHandedness[0].label;
+      const label1 = results.multiHandedness[1].label;
+
+      if (label0 !== label1) {
+        const leftHand = label0 === 'Left' ? hand0 : hand1;
+        const rightHand = label0 === 'Right' ? hand0 : hand1;
+        leftThumb = toPx(leftHand[THUMB_TIP], w, h);
+        leftIndex = toPx(leftHand[INDEX_TIP], w, h);
+        rightThumb = toPx(rightHand[THUMB_TIP], w, h);
+        rightIndex = toPx(rightHand[INDEX_TIP], w, h);
+      } else {
+        // Fallback: sort by x coordinate of the wrist (landmark 0)
+        const sorted = [hand0, hand1].sort((a, b) => a[0].x - b[0].x);
+        leftThumb = toPx(sorted[0][THUMB_TIP], w, h);
+        leftIndex = toPx(sorted[0][INDEX_TIP], w, h);
+        rightThumb = toPx(sorted[1][THUMB_TIP], w, h);
+        rightIndex = toPx(sorted[1][INDEX_TIP], w, h);
+      }
+    }
   }
 
-  if (framePoints.length >= 4){
-    // two hands: build the rainbow-filtered quadrilateral from all 4 tips
-    EFFECTS.polygonFilter(ctx, framePoints, t);
-  } else if (framePoints.length === 2){
-    // one hand: fall back to a rainbow link between its own thumb & index
-    const [p1, p2] = framePoints;
+  if (leftThumb && leftIndex && rightThumb && rightIndex) {
+    // Both hands: draw polygon filter using fixed connections (can twist into an X)
+    EFFECTS.polygonFilter(ctx, leftThumb, leftIndex, rightThumb, rightIndex, t);
+  } else if (results.multiHandLandmarks && results.multiHandLandmarks.length === 1) {
+    // One hand: fallback to rainbowLink
+    const hand = results.multiHandLandmarks[0];
+    const p1 = toPx(hand[THUMB_TIP], w, h);
+    const p2 = toPx(hand[INDEX_TIP], w, h);
     const strength = pinchStrength(p1, p2, w);
     EFFECTS.rainbowLink(ctx, p1, p2, t, strength, 0);
   }
