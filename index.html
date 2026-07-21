@@ -27,7 +27,7 @@
   }
   video{ display:none; }
   canvas#view{
-    max-width:100%; max-height:100%;
+    width:100vw; height:100vh; object-fit:contain;
     transform: scaleX(-1); /* mirror like a real mirror */
     border-radius: 4px;
     box-shadow: 0 0 0 1px var(--line), 0 30px 80px -20px rgba(0,0,0,0.8);
@@ -106,7 +106,7 @@
     <p>Не удалось получить доступ к камере. Разрешите доступ к веб-камере в браузере и обновите страницу.</p>
   </div>
 
-  <video id="video" playsinline></video>
+  <video id="video" playsinline webkit-playsinline></video>
   <canvas id="view"></canvas>
 
   <div class="brackets">
@@ -391,17 +391,27 @@ hands.setOptions({
 });
 hands.onResults(onResults);
 
+
+function resizeCanvas(){
+ const vw=videoEl.videoWidth||1280,vh=videoEl.videoHeight||720;
+ const s=Math.min(window.innerWidth/vw,window.innerHeight/vh);
+ canvas.width=vw;canvas.height=vh;
+ canvas.style.width=(vw*s)+'px';
+ canvas.style.height=(vh*s)+'px';
+}
+window.addEventListener('resize',resizeCanvas);
+window.addEventListener('orientationchange',()=>setTimeout(resizeCanvas,200));
+
 async function start(){
   try{
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: 1280, height: 720, facingMode: 'user' },
+      video:{facingMode:'user',aspectRatio:{ideal:16/9}},
       audio: false
     });
     videoEl.srcObject = stream;
     await videoEl.play();
 
-    canvas.width = videoEl.videoWidth || 1280;
-    canvas.height = videoEl.videoHeight || 720;
+    resizeCanvas();
 
     const camera = new Camera(videoEl, {
       onFrame: async () => { await hands.send({ image: videoEl }); },
